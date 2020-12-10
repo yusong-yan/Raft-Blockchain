@@ -314,6 +314,13 @@ func (rf *Raft) Start(Command string) (int, int, bool) {
 			cond.Wait()
 		}
 		//decide
+		if hearedBackSuccess <= len(rf.Peers)/2 && rf.IsLeader {
+			rf.HeartBeatJob = CommitAndHeartBeat
+			rf.BecomeFollwerFromLeader <- true
+			rf.setFollwer()
+			rf.mu.Unlock()
+			return -1, -1, false
+		}
 		if rf.updateCommitForLeader() && rf.IsLeader {
 			rf.HeartBeatJob = CommitAndHeartBeat
 			rf.CommitGetUpdate.Signal()

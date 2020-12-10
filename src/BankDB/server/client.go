@@ -100,9 +100,12 @@ func (cl *Client) TrySend(tran Transaction) bool {
 			if reply.Status == Ok {
 				//Case one too many server crash or disconnect
 				//Case two in leader election
-				fmt.Println("Not find leader, or leader find but didn't commit")
 				return true
-			} //Else it might be not leader or is leader but cannot operat since not enough server runing
+			} else {
+				fmt.Println("Not Enough Server for raft! Stopped trying!")
+				return false
+			}
+			//Else it might be not leader or is leader but cannot operat since not enough server runing
 		}
 	}
 	return false
