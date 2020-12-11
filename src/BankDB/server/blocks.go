@@ -1,5 +1,6 @@
 package server
 
+// This file is some State Machine(BlockChain) code
 import (
 	"fmt"
 	"sync"
@@ -61,7 +62,7 @@ func (c *Chain) PrintBlocks() {
 		}
 		fmt.Println(" }>")
 	}
-	fmt.Println("-----------------------------------------\n")
+	fmt.Print("-----------------------------------------\n\n")
 	fmt.Print("Balance Table : ")
 	fmt.Println(c.BalanceTable)
 	c.mu.Unlock()

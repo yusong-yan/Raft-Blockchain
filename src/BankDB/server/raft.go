@@ -197,6 +197,7 @@ func (rf *Raft) startAsCand(interval int) int {
 	}
 }
 
+//Become leader, and setup leader
 func (rf *Raft) startAsLeader() {
 	go rf.blockGenerator()
 	//setupleader
@@ -219,6 +220,7 @@ func (rf *Raft) startAsLeader() {
 	}
 }
 
+//every 150 milisecond, send heartbeat also commit entry
 func (rf *Raft) sendHeartBeat() {
 	if rf.getState() == Leader {
 		hearedBack := 1
@@ -275,7 +277,7 @@ func (rf *Raft) sendHeartBeat() {
 	}
 }
 
-//get command from client
+//append block to log and send to everyone
 func (rf *Raft) start(Command *Block) (int, int, bool) {
 	fmt.Println("Recieve message , Appending")
 	Index := -1
@@ -352,6 +354,7 @@ func (rf *Raft) start(Command *Block) (int, int, bool) {
 	return -1, -1, false
 }
 
+//update one server's log
 func (rf *Raft) startOnePeerAppend(server string) bool {
 	result := false
 	if rf.getState() == Leader {
@@ -422,6 +425,7 @@ func (rf *Raft) startOnePeerAppend(server string) bool {
 	return result
 }
 
+//If ther is new commit, push it to State machine
 func (rf *Raft) listenApply() {
 	for {
 		rf.mu.Lock()
@@ -474,8 +478,7 @@ func (rf *Raft) setFollwer() {
 	//fmt.Println("Become Follwer with Term", rf.Term)
 }
 
-//for log
-
+//Update leader's commitIndex
 func (rf *Raft) updateCommitForLeader() bool {
 	beginIndex := rf.CommitIndex + 1
 	lastCommittedIndex := -1
@@ -525,7 +528,7 @@ func (rf *Raft) printLog() {
 			fmt.Println()
 		}
 	}
-	fmt.Println("-----------------------------------------\n")
+	fmt.Print("-----------------------------------------\n\n")
 	rf.mu.Unlock()
 }
 func (rf *Raft) getLogAtIndexWithoutLock(index int) (Entry, bool) {
@@ -584,6 +587,7 @@ func indexInLog(index int) int {
 	}
 }
 
+//ALl rest of the function  is for Creating block
 func (rf *Raft) createBlock(tran *Transaction) bool {
 	fmt.Println("Recieve message , deciding leader")
 	if rf.Chain.ExistId(tran.Id) {
@@ -609,6 +613,7 @@ func (rf *Raft) createBlock(tran *Transaction) bool {
 	return false
 }
 
+//So far only one block can be generated, later I will update the function, so more minner can create block at same time
 func (rf *Raft) blockGenerator() {
 	counter := 0
 	var responses []*sync.Cond

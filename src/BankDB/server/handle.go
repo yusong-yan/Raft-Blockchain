@@ -107,6 +107,7 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 	return nil
 }
 
+//handle creating block
 func (rf *Raft) HandleClient(args *ClientMessageArgs, reply *ClientMessageReply) error {
 	rf.mu.Lock()
 	if rf.Network == Disconnect {
@@ -138,6 +139,7 @@ func (rf *Raft) HandleClient(args *ClientMessageArgs, reply *ClientMessageReply)
 	return nil
 }
 
+//handle check balance
 func (rf *Raft) HandleClientBalance(args *ClientBalanceArgs, reply *ClientBalanceReply) error {
 	rf.mu.Lock()
 	if rf.Network == Disconnect {
@@ -162,6 +164,8 @@ func (rf *Raft) HandleClientBalance(args *ClientBalanceArgs, reply *ClientBalanc
 	rf.mu.Unlock()
 	return nil
 }
+
+//wrapper for call to check network status
 func (rf *Raft) call(rpcname string, server string, args interface{}, reply interface{}) bool {
 	rf.mu.Lock()
 	if rf.Network == Connect {
@@ -173,6 +177,7 @@ func (rf *Raft) call(rpcname string, server string, args interface{}, reply inte
 	}
 }
 
+//setup rpc
 func call(rpcname string, server string, args interface{}, reply interface{}) bool {
 	c, err := rpc.DialHTTP("tcp", ":"+server)
 	if err != nil {

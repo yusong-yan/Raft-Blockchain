@@ -101,7 +101,7 @@ func (cl *Client) startUserInterface() {
 		fmt.Println("-----------------------------------------")
 		fmt.Println(" 1.Balance transaction  ")
 		fmt.Println(" 2.Transfer transaction ")
-		fmt.Println("-----------------------------------------\n")
+		fmt.Print("-----------------------------------------\n\n")
 		fmt.Print(" Select a option ->: ")
 		var op string
 		fmt.Scan(&op)
