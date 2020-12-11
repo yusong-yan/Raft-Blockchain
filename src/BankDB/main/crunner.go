@@ -15,5 +15,4 @@ func main() {
 	}
 	name := arguments[1]
 	server.MakeClient(name)
-	select {}
 }

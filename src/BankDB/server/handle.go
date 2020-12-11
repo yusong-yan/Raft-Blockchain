@@ -108,19 +108,60 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 }
 
 func (rf *Raft) HandleClient(args *ClientMessageArgs, reply *ClientMessageReply) error {
+	rf.mu.Lock()
 	if rf.Network == Disconnect {
+		rf.mu.Unlock()
 		return errors.New("SERVER " + rf.Me + " DISCONNECT")
 	}
+	rf.mu.Unlock()
 	//
 	//search if id exist
 	//If id doesn't exist then , rf.Start(args.Message)
 	//else if id exist but not commit, StartOnepeer append
+	if rf.getState() != Leader {
+		fmt.Println("Receive append, but not leader")
+		reply.Status = NotLeader
+	} else {
+		ok := rf.createBlock(args.Message)
+		if ok {
+			reply.Status = Ok
+		} else {
+			reply.Status = Fail
+		}
+	}
+	rf.mu.Lock()
 	if rf.Network == Disconnect {
+		rf.mu.Unlock()
 		return errors.New("SERVER " + rf.Me + " DISCONNECT")
 	}
+	rf.mu.Unlock()
 	return nil
 }
 
+func (rf *Raft) HandleClientBalance(args *ClientBalanceArgs, reply *ClientBalanceReply) error {
+	rf.mu.Lock()
+	if rf.Network == Disconnect {
+		rf.mu.Unlock()
+		return errors.New("SERVER " + rf.Me + " DISCONNECT")
+	}
+	rf.mu.Unlock()
+
+	if rf.getState() != Leader {
+		fmt.Println("Receive checkBalance, but not leader")
+		reply.Status = NotLeader
+	} else {
+		money := rf.Chain.CheckBalance(args.Name)
+		reply.Status = Ok
+		reply.Money = money
+	}
+	rf.mu.Lock()
+	if rf.Network == Disconnect {
+		rf.mu.Unlock()
+		return errors.New("SERVER " + rf.Me + " DISCONNECT")
+	}
+	rf.mu.Unlock()
+	return nil
+}
 func (rf *Raft) call(rpcname string, server string, args interface{}, reply interface{}) bool {
 	rf.mu.Lock()
 	if rf.Network == Connect {
@@ -141,7 +182,7 @@ func call(rpcname string, server string, args interface{}, reply interface{}) bo
 
 	err = c.Call(rpcname, args, reply)
 	if err != nil {
-		fmt.Println(err)
+		//fmt.Println(err)
 		return false
 	}
 	return true

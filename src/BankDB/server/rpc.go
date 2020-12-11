@@ -2,6 +2,7 @@ package server
 
 import (
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,7 @@ const (
 const (
 	Ok = iota + 1
 	Fail
+	NotLeader
 )
 
 const (
@@ -31,24 +33,32 @@ const (
 
 type ApplyMsg struct {
 	//CommandValid bool
-	Command      string
+	Command      *Block
 	CommandIndex int
 }
 
 type Entry struct {
 	Index   int
-	Command string
+	Command *Block
 	Term    int
-	//Id      int
 }
 
 type ClientMessageArgs struct {
-	Message Transaction
+	Message *Transaction
 }
 
 type ClientMessageReply struct {
-	Message int
-	Status  int
+	//Message int
+	Status int
+}
+
+type ClientBalanceArgs struct {
+	Name string
+}
+
+type ClientBalanceReply struct {
+	Money  int
+	Status int
 }
 
 type AppendEntriesArgs struct {
@@ -87,8 +97,20 @@ type Transaction struct {
 	Id       string
 }
 
+type Block struct {
+	Term  int
+	Phase string
+	Nonce string
+	Trans []*Transaction
+}
+
+type TransactionWithCond struct {
+	Tran *Transaction
+	Cond *sync.Cond
+}
+
 func generateTime() int {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	diff := 700 - 350
-	return (350 + r.Intn(diff)) * 10
+	return (350 + r.Intn(diff))
 }

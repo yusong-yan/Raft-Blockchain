@@ -1,7 +1,10 @@
 package server
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -31,9 +34,11 @@ type Raft struct {
 	CommitGetUpdateDone     *sync.Cond
 	LastApply               int
 	HeartBeatJob            int
+
+	RecevieTransactionWithCond chan *TransactionWithCond
 }
 
-func MakeRaft(me string) *Raft {
+func MakeRaft(me string) {
 	rf := &Raft{}
 	rf.State = Follwer
 	rf.Network = Connect
@@ -52,6 +57,8 @@ func MakeRaft(me string) *Raft {
 	rf.CommitIndex = 0
 	rf.LastApply = 0
 	rf.HeartBeatJob = CommitAndHeartBeat
+
+	rf.RecevieTransactionWithCond = make(chan *TransactionWithCond, 1)
 	for i := 0; i < len(rf.Peers); i++ {
 		server := rf.Peers[i]
 		rf.NextIndex[server] = rf.getLastLogEntryWithoutLock().Index + 1
@@ -68,7 +75,8 @@ func MakeRaft(me string) *Raft {
 	//Start Raft
 	//fmt.Println("Become Follwer with Term", rf.Term)
 	go rf.startElection()
-	return rf
+
+	rf.startUserInterface()
 }
 
 //ELECTION TIMER
@@ -102,6 +110,7 @@ func (rf *Raft) startElection() {
 
 		go rf.startAsLeader()
 		<-rf.BecomeFollwerFromLeader
+		fmt.Println("Become Follwer from Leader with Term", rf.getTerm())
 	}
 }
 
@@ -129,7 +138,7 @@ func (rf *Raft) startAsCand(interval int) int {
 	rf.PeerCommit = false
 	rf.State = Cand
 	rf.Term = rf.Term + 1
-	//fmt.Println("Become Candidate with Term", rf.Term)
+	fmt.Println("Become Candidate with Term", rf.Term)
 	rf.VotedFor = rf.Me
 	args.Term = rf.Term
 	args.PeerId = rf.Me
@@ -189,6 +198,7 @@ func (rf *Raft) startAsCand(interval int) int {
 }
 
 func (rf *Raft) startAsLeader() {
+	go rf.blockGenerator()
 	//setupleader
 	rf.mu.Lock()
 	for i := 0; i < len(rf.Peers); i++ {
@@ -199,7 +209,7 @@ func (rf *Raft) startAsLeader() {
 	}
 	rf.PeerCommit = false
 	rf.mu.Unlock()
-	rf.Start("None")
+	rf.start(nil)
 	for {
 		go rf.sendHeartBeat()
 		if rf.getState() != Leader {
@@ -256,7 +266,7 @@ func (rf *Raft) sendHeartBeat() {
 				if !rf.PeerAlive[server] && rf.State == Leader {
 					rf.PeerAlive[server] = true
 					go func() {
-						rf.StartOnePeerAppend(server)
+						rf.startOnePeerAppend(server)
 					}()
 				}
 				rf.mu.Unlock()
@@ -266,7 +276,8 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 //get command from client
-func (rf *Raft) Start(Command string) (int, int, bool) {
+func (rf *Raft) start(Command *Block) (int, int, bool) {
+	fmt.Println("Recieve message , Appending")
 	Index := -1
 	Term := -1
 	IsLeader := rf.getState() == Leader
@@ -278,7 +289,7 @@ func (rf *Raft) Start(Command string) (int, int, bool) {
 		rf.mu.Lock()
 		Term = rf.Term
 		newE := Entry{}
-		if Command != "None" {
+		if Command != nil {
 			newE.Command = Command
 			newE.Index = rf.getLastLogEntryWithoutLock().Index + 1
 			newE.Term = rf.Term
@@ -297,7 +308,7 @@ func (rf *Raft) Start(Command string) (int, int, bool) {
 				continue
 			}
 			go func() {
-				ok := rf.StartOnePeerAppend(server)
+				ok := rf.startOnePeerAppend(server)
 				rf.mu.Lock()
 				hearedBack++
 				if ok {
@@ -329,6 +340,7 @@ func (rf *Raft) Start(Command string) (int, int, bool) {
 			return Index, Term, IsLeader
 		} else if rf.IsLeader {
 			rf.HeartBeatJob = CommitAndHeartBeat
+			fmt.Println("Redundent commit")
 			rf.mu.Unlock()
 			return -1, -1, IsLeader
 		} else {
@@ -340,7 +352,7 @@ func (rf *Raft) Start(Command string) (int, int, bool) {
 	return -1, -1, false
 }
 
-func (rf *Raft) StartOnePeerAppend(server string) bool {
+func (rf *Raft) startOnePeerAppend(server string) bool {
 	result := false
 	if rf.getState() == Leader {
 		//set up sending log
@@ -438,13 +450,13 @@ func (rf *Raft) getTerm() int {
 	return rf.Term
 }
 
-func (rf *Raft) Connect() {
+func (rf *Raft) connect() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.Network = Connect
 }
 
-func (rf *Raft) Disconnect() {
+func (rf *Raft) disconnect() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.Network = Disconnect
@@ -459,7 +471,7 @@ func (rf *Raft) setLeader() {
 func (rf *Raft) setFollwer() {
 	rf.State = Follwer
 	rf.IsLeader = false
-	fmt.Println("Become Follwer with Term", rf.Term)
+	//fmt.Println("Become Follwer with Term", rf.Term)
 }
 
 //for log
@@ -491,8 +503,30 @@ func (rf *Raft) updateCommitForLeader() bool {
 	return updated
 }
 
-func (rf *Raft) PrintBlocks() {
-	rf.Chain.PrintBlocks()
+func (rf *Raft) printLog() {
+	rf.mu.Lock()
+	var state string
+	if rf.State == Leader {
+		state = "Leader"
+	} else if rf.State == Cand {
+		state = "Candidate"
+	} else {
+		state = "Follwer"
+	}
+	fmt.Println("-----------------------------------------")
+	fmt.Println(state, " with ", rf.Term, " have LOG:")
+	for _, vs := range rf.Log {
+		for _, v := range vs.Command.Trans {
+			fmt.Print(v.Sender)
+			fmt.Print(" send to ")
+			fmt.Print(v.Receiver)
+			fmt.Print(" money:")
+			fmt.Print(v.Amt)
+			fmt.Println()
+		}
+	}
+	fmt.Println("-----------------------------------------\n")
+	rf.mu.Unlock()
 }
 func (rf *Raft) getLogAtIndexWithoutLock(index int) (Entry, bool) {
 	if index == 0 {
@@ -548,4 +582,133 @@ func indexInLog(index int) int {
 		println("ERROR")
 		return -1
 	}
+}
+
+func (rf *Raft) createBlock(tran *Transaction) bool {
+	fmt.Println("Recieve message , deciding leader")
+	if rf.Chain.ExistId(tran.Id) {
+		fmt.Println("Receive append, but exist")
+		return true
+	}
+	//give it to generator and wait for response
+	fmt.Println("Starting create block")
+	cond := sync.NewCond(&rf.mu)
+	TWC := &TransactionWithCond{}
+	TWC.Cond = cond
+	TWC.Tran = tran
+	rf.RecevieTransactionWithCond <- TWC
+	rf.mu.Lock()
+	cond.Wait()
+	rf.mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	if rf.Chain.ExistId(tran.Id) {
+		fmt.Println("Receive append, exist")
+		return true
+	}
+	//_, _, isLeader := rf.Start(Block)
+	return false
+}
+
+func (rf *Raft) blockGenerator() {
+	counter := 0
+	var responses []*sync.Cond
+	var b *Block
+	for rf.isLeaderAndConnect() {
+		if counter < 3 {
+			select {
+			case TWC := <-rf.RecevieTransactionWithCond:
+				fmt.Println("Receive on Transaction in blockGenerator")
+				if counter == 0 {
+					responses = []*sync.Cond{}
+					b = &Block{}
+					b.Trans = []*Transaction{}
+				}
+				b.Trans = append(b.Trans, TWC.Tran)
+				responses = append(responses, TWC.Cond)
+				counter++
+			default:
+			}
+		}
+		if counter != 0 {
+			rf.mu.Lock()
+			b.Term = rf.Term
+			b.Phase = rf.asSha256((rf.Chain.LastBlock()))
+			rf.mu.Unlock()
+			b.Nonce = strconv.Itoa(rand.Int())
+			if rf.validNonce(rf.asSha256(b)) {
+				rf.start(b)
+				for _, v := range responses {
+					v.Signal()
+				}
+				counter = 0
+			}
+			time.Sleep(100 * time.Millisecond)
+			fmt.Println("try nonce fail")
+		}
+	}
+	for _, v := range responses {
+		v.Signal()
+	}
+}
+
+func (rf *Raft) validNonce(s string) bool {
+	lastChar := s[len(s)-1]
+	fmt.Println(lastChar)
+	if 0 <= lastChar && lastChar <= 2 {
+		return true
+	}
+	return false
+}
+
+func (rf *Raft) asSha256(o interface{}) string {
+	s := fmt.Sprintf("%v", o)
+	hash := sha256.Sum256([]byte(s))
+	return string(hash[:])
+}
+
+func (rf *Raft) printBlocks() {
+	rf.Chain.PrintBlocks()
+}
+
+func (rf *Raft) startUserInterface() {
+	for {
+		//fmt.Println("-----------------------------------------")
+		fmt.Println("\n a.PrintLog")
+		fmt.Println(" b.Connect ")
+		fmt.Println(" c.Disconnect")
+		fmt.Println(" d.PrintStateMachine")
+		//fmt.Println("-----------------------------------------\n")
+		fmt.Print(" Enter: ")
+		var op string
+		fmt.Scan(&op)
+		if op == "b" {
+			rf.connect()
+		} else if op == "c" {
+			rf.disconnect()
+		} else if op == "a" {
+			rf.printLog()
+		} else if op == "d" {
+			rf.printBlocks()
+		} else {
+			fmt.Println("INCORRECT  Reselect")
+			continue
+		}
+	}
+}
+
+func (rf *Raft) isLeaderAndConnect() bool {
+	network := false
+	isLeader := false
+	rf.mu.Lock()
+	if rf.State == Leader {
+		isLeader = true
+	}
+	if rf.Network == Connect {
+		network = true
+	}
+	rf.mu.Unlock()
+	if isLeader == true && network == true {
+		return true
+	}
+	return false
 }
