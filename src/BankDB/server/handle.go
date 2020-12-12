@@ -45,20 +45,22 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 					reply.Success = false
 				} else {
 					rf.Log = rf.Log[:indexInLog(args.PrevLogIndex+1)]
-					rf.Log = append(rf.Log, args.Entries...)
+					if len(args.Entries) == 0 {
+						if (len(rf.Log)) > 0 {
+							rf.Log[len(rf.Log)-1].Term = args.Term
+						}
+					} else {
+						rf.Log = append(rf.Log, args.Entries...)
+					}
 					reply.LastIndex = -1
 					reply.Success = true
-					rf.PeerCommit = true
 				}
 			}
 			return nil
 		} else if args.Job == CommitAndHeartBeat {
-			if rf.PeerCommit == true {
-				rf.PeerCommit = false
-				rf.CommitIndex = min(args.LeaderCommit, rf.getLastLogEntryWithoutLock().Index)
-				rf.CommitGetUpdate.Signal()
-				rf.CommitGetUpdateDone.Wait()
-			}
+			rf.CommitIndex = min(args.LeaderCommit, rf.getLastLogEntryWithoutLock().Index)
+			rf.CommitGetUpdate.Signal()
+			rf.CommitGetUpdateDone.Wait()
 			if rf.Network == Disconnect {
 				return errors.New("SERVER " + rf.Me + " DISCONNECT")
 			}
