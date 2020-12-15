@@ -49,8 +49,8 @@ func (c *Chain) PrintBlocks() {
 	c.mu.Lock()
 	fmt.Println("-----------------------------------------")
 	fmt.Println("State Machine:")
-	for _, vs := range c.Blocks {
-		fmt.Print("Block <{")
+	for i, vs := range c.Blocks {
+		fmt.Print("Block: ", i+1, " <{")
 		for i, v := range vs.Trans {
 			fmt.Print(" TRANSACTION", i+1, ": [")
 			fmt.Print(v.Sender)
@@ -62,9 +62,9 @@ func (c *Chain) PrintBlocks() {
 		}
 		fmt.Println(" }>")
 	}
-	fmt.Print("-----------------------------------------\n\n")
-	fmt.Print("Balance Table : ")
+	fmt.Print("\nBalance Table : ")
 	fmt.Println(c.BalanceTable)
+	fmt.Print("-----------------------------------------\n\n")
 	c.mu.Unlock()
 }
 
@@ -84,7 +84,7 @@ func (c *Chain) LastBlock() *Block {
 func (c *Chain) CheckBalance(name string) int {
 	money, exist := c.BalanceTable[name]
 	if !exist {
-		return 10
+		return 100
 	} else {
 		return money
 	}

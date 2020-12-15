@@ -45,27 +45,19 @@ func (rf *Raft) HandleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 					reply.Success = false
 				} else {
 					rf.Log = rf.Log[:indexInLog(args.PrevLogIndex+1)]
-					if len(args.Entries) == 0 {
-						if (len(rf.Log)) > 0 {
-							rf.Log[len(rf.Log)-1].Term = args.Term
-						}
-					} else {
-						rf.Log = append(rf.Log, args.Entries...)
+					rf.Log = append(rf.Log, args.Entries...)
+					if (len(rf.Log)) > 0 {
+						rf.Log[len(rf.Log)-1].Term = args.Term
 					}
 					reply.LastIndex = -1
 					reply.Success = true
 				}
 			}
-			return nil
 		} else if args.Job == CommitAndHeartBeat {
 			rf.CommitIndex = min(args.LeaderCommit, rf.getLastLogEntryWithoutLock().Index)
-			rf.CommitGetUpdate.Signal()
-			rf.CommitGetUpdateDone.Wait()
-			if rf.Network == Disconnect {
-				return errors.New("SERVER " + rf.Me + " DISCONNECT")
-			}
-			return nil
+			go rf.startApply(rf.CommitIndex)
 		}
+		rf.persist()
 		return nil
 	}
 	//TERM IS BIGGER JUST REPLY TERM
@@ -106,6 +98,7 @@ func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 	}
 	reply.Term = rf.Term
 	reply.State = rf.State
+	rf.persist()
 	return nil
 }
 
@@ -213,7 +206,7 @@ func readfile(fileName string) []string {
 func (rf *Raft) setup() {
 	//readfile
 	rf.Peers = readfile("servers.txt")
-	fmt.Println("All peers:  ", rf.Peers)
+	fmt.Println("\nAll peers:  ", rf.Peers)
 
 	//setup my own server
 	conn, err := net.Listen("tcp", ":"+rf.Me)
@@ -225,7 +218,7 @@ func (rf *Raft) setup() {
 		log.Fatal("Raft:", err)
 	}
 	rpc.HandleHTTP()
-	fmt.Println("setupServer")
+	fmt.Println("\nSETUP SERVER DONE")
 	go http.Serve(conn, nil)
 }
 

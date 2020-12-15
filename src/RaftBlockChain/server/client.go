@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 )
@@ -19,6 +21,7 @@ func MakeClient(name string) {
 	cl.ClientPeers = readfile("clients.txt")
 	cl.Me = name
 	cl.Counter = 0
+	cl.readPersist()
 	cl.startUserInterface()
 }
 
@@ -55,6 +58,7 @@ func (cl *Client) send(sender string, receiver string, money int) bool {
 	tran.Sender = sender
 	tran.Id = cl.Me + strconv.Itoa(cl.Counter)
 	cl.Counter++
+	cl.persist()
 	for {
 		if cl.trySend(tran) {
 			return true
@@ -94,6 +98,29 @@ func (cl *Client) trySend(tran *Transaction) bool {
 		}
 	}
 	return false
+}
+
+func (cl *Client) persist() {
+	fileName := cl.Me + ".yys"
+	ofile, _ := os.Create(fileName)
+	e := json.NewEncoder(ofile)
+	e.Encode(cl.Counter)
+}
+
+func (cl *Client) readPersist() {
+	fileName := cl.Me + ".yys"
+	file, err := os.Open(fileName)
+	if err != nil {
+		fmt.Println(fileName, " file doesn't exist")
+		return
+	}
+	d := json.NewDecoder(file)
+	var Counter int
+	d.Decode(&Counter)
+	cl.Counter = Counter
+	fmt.Println("\nREAD FROM DISK--------------")
+	fmt.Println("Counter: ", cl.Counter)
+	fmt.Println("----------------------------")
 }
 
 func (cl *Client) startUserInterface() {

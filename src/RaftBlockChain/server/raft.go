@@ -2,8 +2,10 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -30,9 +32,8 @@ type Raft struct {
 	CommitIndex             int
 	Chain                   *Chain
 	ApplyCh                 chan ApplyMsg
-	CommitGetUpdate         *sync.Cond
-	CommitGetUpdateDone     *sync.Cond
 	LastApply               int
+	ApplyBuffer             chan bool
 
 	RecevieTransactionWithCond chan *TransactionWithCond
 }
@@ -49,10 +50,13 @@ func MakeRaft(me string) {
 	rf.Term = 0
 	rf.ReceiveHB = make(chan bool, 1)
 	rf.BecomeFollwerFromLeader = make(chan bool, 1)
+	rf.ApplyBuffer = make(chan bool, 1)
+	go func() {
+		rf.ApplyBuffer <- true
+	}()
 	rf.NextIndex = map[string]int{}
 	rf.MatchIndex = map[string]int{}
 	rf.PeerAlive = map[string]bool{}
-	//rf.PeerCommit = false
 	rf.OpenCommit = map[string]bool{}
 	rf.CommitIndex = 0
 	rf.LastApply = 0
@@ -61,16 +65,14 @@ func MakeRaft(me string) {
 	for i := 0; i < len(rf.Peers); i++ {
 		server := rf.Peers[i]
 		rf.NextIndex[server] = rf.getLastLogEntryWithoutLock().Index + 1
-		rf.MatchIndex[server] = rf.NextIndex[server] - 1
+		rf.MatchIndex[server] = 0
 		rf.PeerAlive[server] = true
 	}
 	rf.setup()
+	rf.readPersist()
 	//For state Machine
 	rf.ApplyCh = make(chan ApplyMsg, 1)
 	rf.Chain = MakeChain(rf.ApplyCh)
-	rf.CommitGetUpdate = sync.NewCond(&rf.mu)
-	rf.CommitGetUpdateDone = sync.NewCond(&rf.mu)
-	go rf.listenApply()
 	//Start Raft
 	//fmt.Println("Become Follwer with Term", rf.Term)
 	go rf.startElection()
@@ -134,7 +136,6 @@ func (rf *Raft) startAsCand(interval int) int {
 	votes := 1
 	args := RequestVoteArgs{}
 	rf.mu.Lock()
-	//rf.PeerCommit = false
 	rf.State = Cand
 	rf.Term = rf.Term + 1
 	fmt.Println("Become Candidate with Term", rf.Term)
@@ -143,6 +144,7 @@ func (rf *Raft) startAsCand(interval int) int {
 	args.PeerId = rf.Me
 	args.LastLogIndex = rf.getLastLogEntryWithoutLock().Index
 	args.LastLogTerm = rf.termForLog(args.LastLogIndex)
+	rf.persist()
 	rf.mu.Unlock()
 	// fmt.Println(rf.Me, "start election with lastIndex", args.LastLogIndex, "and lastlongTerm", args.LastLogTerm)
 	for s := 0; s < len(rf.Peers); s++ {
@@ -168,6 +170,7 @@ func (rf *Raft) startAsCand(interval int) int {
 			if reply.Term > rf.Term && rf.State == Cand {
 				rf.Term = reply.Term
 				rf.ReceiveHB <- true
+				rf.persist()
 				rf.mu.Unlock()
 				cond.Signal()
 				return
@@ -204,13 +207,15 @@ func (rf *Raft) startAsLeader() {
 	for i := 0; i < len(rf.Peers); i++ {
 		server := rf.Peers[i]
 		rf.NextIndex[server] = rf.getLastLogEntryWithoutLock().Index + 1
-		rf.MatchIndex[server] = rf.NextIndex[server] - 1
-		rf.PeerAlive[server] = true
+		rf.MatchIndex[server] = 0
+		rf.PeerAlive[server] = false
 		rf.OpenCommit[server] = false
+		if (len(rf.Log)) > 0 {
+			rf.Log[len(rf.Log)-1].Term = rf.Term
+		}
 	}
-	//rf.PeerCommit = false
 	rf.mu.Unlock()
-	rf.start(nil)
+	//rf.start(nil)
 	for {
 		go rf.sendHeartBeat()
 		if rf.getState() != Leader {
@@ -265,6 +270,7 @@ func (rf *Raft) sendHeartBeat() {
 					rf.Term = reply.Term
 					rf.BecomeFollwerFromLeader <- true
 					rf.setFollwer()
+					rf.persist()
 					rf.mu.Unlock()
 					return
 				}
@@ -272,12 +278,6 @@ func (rf *Raft) sendHeartBeat() {
 					rf.PeerAlive[server] = true
 					go func() {
 						rf.startOnePeerAppend(server)
-						rf.mu.Lock()
-						if rf.updateCommitForLeader() && rf.IsLeader {
-							rf.CommitGetUpdate.Signal()
-							rf.CommitGetUpdateDone.Wait()
-						}
-						rf.mu.Unlock()
 					}()
 				}
 				rf.mu.Unlock()
@@ -311,6 +311,7 @@ func (rf *Raft) start(Command *Block) (int, int, bool) {
 			}
 		}
 		Index = rf.getLastLogEntryWithoutLock().Index
+		rf.persist()
 		rf.mu.Unlock()
 		for i := 0; i < len(rf.Peers); i++ {
 			server := rf.Peers[i]
@@ -331,20 +332,16 @@ func (rf *Raft) start(Command *Block) (int, int, bool) {
 
 		//wait
 		rf.mu.Lock()
-		for hearedBack != len(rf.Peers) && hearedBackSuccess <= len(rf.Peers)/2 && rf.IsLeader {
+		for hearedBack != len(rf.Peers) && rf.CommitIndex < Index && rf.IsLeader {
 			cond.Wait()
 		}
+
 		//decide
-		if hearedBackSuccess <= len(rf.Peers)/2 && rf.IsLeader {
-			//rf.HeartBeatJob = CommitAndHeartBeat
-			// rf.BecomeFollwerFromLeader <- true
-			// rf.setFollwer()
+		if rf.CommitIndex < Index && rf.IsLeader {
 			rf.mu.Unlock()
 			return -1, -1, false
 		} else {
-			if rf.updateCommitForLeader() && rf.IsLeader {
-				rf.CommitGetUpdate.Signal()
-				rf.CommitGetUpdateDone.Wait()
+			if rf.CommitIndex >= Index && rf.IsLeader {
 				rf.mu.Unlock()
 				return Index, Term, IsLeader
 			} else {
@@ -407,12 +404,16 @@ func (rf *Raft) startOnePeerAppend(server string) bool {
 				rf.NextIndex[server] = rf.MatchIndex[server] + 1
 				rf.OpenCommit[server] = true
 				rf.PeerAlive[server] = true
+				if rf.updateCommitForLeader() && rf.IsLeader {
+					go rf.startApply(rf.CommitIndex)
+				}
 				rf.mu.Unlock()
 				result = true
 				break
 			} else {
 				//resend
 				rf.mu.Lock()
+				rf.PeerAlive[server] = true
 				args.Term = rf.Term
 				args.LeaderCommit = rf.CommitIndex
 				if reply.LastIndex != -1 {
@@ -431,20 +432,60 @@ func (rf *Raft) startOnePeerAppend(server string) bool {
 }
 
 //If ther is new commit, push it to State machine
-func (rf *Raft) listenApply() {
-	for {
-		rf.mu.Lock()
-		rf.CommitGetUpdate.Wait()
-		for rf.CommitIndex > rf.LastApply {
-			rf.LastApply = rf.LastApply + 1
-			am := ApplyMsg{}
-			am.Command = rf.Log[indexInLog(rf.LastApply)].Command
-			am.CommandIndex = rf.LastApply
-			rf.ApplyCh <- am
-		}
-		rf.mu.Unlock()
-		rf.CommitGetUpdateDone.Signal()
+func (rf *Raft) startApply(CommitIndex int) {
+	<-rf.ApplyBuffer
+	for CommitIndex > rf.LastApply {
+		rf.LastApply = rf.LastApply + 1
+		am := ApplyMsg{}
+		am.Command = rf.Log[indexInLog(rf.LastApply)].Command
+		am.CommandIndex = rf.LastApply
+		rf.ApplyCh <- am
 	}
+	go func() {
+		rf.ApplyBuffer <- true
+	}()
+}
+
+func (rf *Raft) persist() {
+	fileName := rf.Me + ".yys"
+	ofile, _ := os.Create(fileName)
+	e := json.NewEncoder(ofile)
+	e.Encode(rf.Term)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+}
+
+func (rf *Raft) readPersist() {
+	fileName := rf.Me + ".yys"
+	file, err := os.Open(fileName)
+	if err != nil {
+		fmt.Println(fileName, " file doesn't exist")
+		return
+	}
+	d := json.NewDecoder(file)
+	var CurrentTerm int
+	var VotedFor string
+	var Logs []Entry
+	d.Decode(&CurrentTerm)
+	d.Decode(&VotedFor)
+	d.Decode(&Logs)
+	rf.Term = CurrentTerm
+	rf.VotedFor = VotedFor
+	rf.Log = Logs
+	fmt.Println("\nREAD FROM DISK--------------")
+	fmt.Println("Term: ", rf.Term)
+	fmt.Println("VotedFor", rf.VotedFor)
+	for _, vs := range rf.Log {
+		for _, v := range vs.Command.Trans {
+			fmt.Print(v.Sender)
+			fmt.Print(" send to ")
+			fmt.Print(v.Receiver)
+			fmt.Print(" money:")
+			fmt.Print(v.Amt)
+			fmt.Println()
+		}
+	}
+	fmt.Println("----------------------------")
 }
 
 func (rf *Raft) getState() int {
@@ -611,7 +652,7 @@ func (rf *Raft) createBlock(tran *Transaction) bool {
 	rf.mu.Unlock()
 	time.Sleep(200 * time.Millisecond)
 	if rf.Chain.ExistId(tran.Id) {
-		fmt.Println("Receive append, exist")
+		fmt.Println("Success append one transaction")
 		return true
 	}
 	//_, _, isLeader := rf.Start(Block)
@@ -647,12 +688,13 @@ func (rf *Raft) blockGenerator() {
 			b.Nonce = strconv.Itoa(rand.Int())
 			if rf.validNonce(rf.asSha256(b)) {
 				rf.start(b)
+				counter = 0
 				for _, v := range responses {
 					v.Signal()
 				}
-				counter = 0
+				continue
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			fmt.Println("try nonce fail")
 		}
 	}
