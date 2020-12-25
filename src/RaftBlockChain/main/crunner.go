@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yusong-yan/Raft-Blockchain/RaftBlockChain/src/server"
+	"github.com/yusong-yan/Raft-Blockchain/src/RaftBlockChain/server"
 )
 
 func main() {
